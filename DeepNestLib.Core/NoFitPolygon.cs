@@ -294,7 +294,7 @@
     public static INfp FromDxf(List<DxfEntity> dxfEntities)
     {
       IRawDetail raw;
-      raw = DxfParser.ConvertDxfToRawDetail(string.Empty, dxfEntities);
+      raw = DxfParser.ConvertDxfToRawDetail(string.Empty, dxfEntities, new List<string> { }, true);
       INfp result;
       raw.TryConvertToNfp(0, out result);
       return result;

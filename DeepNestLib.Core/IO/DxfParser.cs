@@ -1,5 +1,8 @@
 ﻿namespace DeepNestLib.IO
 {
+  using IxMilia.Dxf;
+  using IxMilia.Dxf.Entities;
+  using Light.GuardClauses;
   using System;
   using System.Collections.Generic;
   using System.Drawing;
@@ -7,8 +10,6 @@
   using System.Linq;
   using System.Reflection;
   using System.Threading.Tasks;
-  using IxMilia.Dxf;
-  using IxMilia.Dxf.Entities;
 
   public class DxfParser
   {
@@ -31,7 +32,8 @@
           {
             dxffile = DxfFile.Load(fi.FullName);
             IEnumerable<DxfEntity> entities = dxffile.Entities.ToArray();
-            return ConvertDxfToRawDetail(fi.FullName, entities);
+            //FIXME move the layer HDLN to a correct place
+            return ConvertDxfToRawDetail(fi.FullName, entities, new List<string> {"-HDLN"}, true);
           }
         }
         catch (IOException) when (i <= NumberOfRetries)
@@ -47,13 +49,22 @@
       return default;
     }
 
-    public static RawDetail<DxfEntity> ConvertDxfToRawDetail(string fullFilename, IEnumerable<DxfEntity> entities)
+    public static RawDetail<DxfEntity> ConvertDxfToRawDetail(
+      string fullFilename,
+      IEnumerable<DxfEntity> entities,
+      List<string> layersToExclude,
+      bool validateElementConnection)
     {
       RawDetail<DxfEntity> s = new RawDetail<DxfEntity>();
       s.Name = fullFilename;
+
+      //entities = entities.Where(e => e.Layer == null || !e.Layer.Contains("-HDLN", StringComparison.OrdinalIgnoreCase));
+      entities = entities.Where(e => e.Layer == null || !layersToExclude.Any(excl => e.Layer.Contains(excl, StringComparison.OrdinalIgnoreCase)));
+
       Dictionary<DxfEntity, IList<LineElement>> approximations = ApproximateEntities(entities);
       s.AddRangeContour(ConnectElements(approximations));
-      if (s.Outers.Any(z => z.Points.Count < 3))
+
+      if (validateElementConnection && s.Outers.Any(z => z.Points.Count < 3))
       {
         throw new Exception("Too few points");
       }
@@ -197,7 +208,7 @@
     {
       DxfFile dxffile = DxfFile.Load(inputStream);
       IEnumerable<DxfEntity> entities = dxffile.Entities.ToArray();
-      return ConvertDxfToRawDetail(name, entities);
+      return ConvertDxfToRawDetail(name, entities, new List<string> { }, true);
     }
 
     /// <summary>

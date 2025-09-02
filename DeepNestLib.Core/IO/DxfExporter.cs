@@ -123,12 +123,12 @@
 #if NCRUNCH
             if (polygon.IsExact && !(new FileInfo(polygon.Name).Exists))
             {
-              fl = DxfParser.ConvertDxfToRawDetail("generated.dxf", polygon.ToDxfFile().Entities.ToArray());
+              fl = DxfParser.ConvertDxfToRawDetail("generated.dxf", polygon.ToDxfFile().Entities.ToArray(),new List<string> { }, false);
             }
             else
 #endif
             {
-              fl = DxfParser.ConvertDxfToRawDetail(polygon.Name, DxfFile.Load(polygon.Name).Entities.ToArray());
+              fl = DxfParser.ConvertDxfToRawDetail(polygon.Name, DxfFile.Load(polygon.Name).Entities.ToArray(), new List<string> { }, false);
             }
           }
           catch
