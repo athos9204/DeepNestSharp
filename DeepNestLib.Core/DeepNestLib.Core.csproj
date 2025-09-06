@@ -17,6 +17,7 @@
     <None Remove="Placement\_._" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="ACadSharp" Version="3.1.12" />
     <PackageReference Include="GeneticSharp" Version="2.6.0" />
     <PackageReference Include="GeneticSharp.Extensions" Version="2.6.0" />
     <PackageReference Include="IxMilia.Dxf" Version="0.8.3" />
