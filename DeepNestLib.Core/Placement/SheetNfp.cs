@@ -61,6 +61,11 @@ namespace DeepNestLib
       return o.WidthCalculated < sheet.WidthCalculated &&
              o.HeightCalculated < sheet.HeightCalculated;
     }
+    //private static bool SmallerThanOrEqualsToSheet(ISheet sheet, INfp o)
+    //{
+    //  return o.WidthCalculated <= sheet.WidthCalculated &&
+    //         o.HeightCalculated <= sheet.HeightCalculated;
+    //}
 
     internal bool CanAcceptPart
     {

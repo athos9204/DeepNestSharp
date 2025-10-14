@@ -208,7 +208,7 @@
           // case 'h':
           // case 'H':
           // case 'v':
-          // case 'V':
+          // case 'sheetSizeCorrection':
           // var point = { };
           //    point.x = x;
           // point.y = y;

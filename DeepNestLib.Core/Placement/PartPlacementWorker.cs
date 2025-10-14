@@ -297,7 +297,7 @@
           this.SheetNfp = this.InitialiseSheetNfp(processedPart);
           if (this.SheetNfp.CanAcceptPart)
           {
-            this.VerboseLog($"{processedPart.ToShortString()} could be placed if sheet empty (only do this for the first part on each sheet).");
+            //this.VerboseLog($"{processedPart.ToShortString()} could be placed if sheet empty (only do this for the first part on each sheet).");
             break;
           }
         }

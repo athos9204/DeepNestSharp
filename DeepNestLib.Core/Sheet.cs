@@ -46,5 +46,11 @@
       options.WriteIndented = true;
       return JsonSerializer.Serialize(this, options);
     }
+
+    public Sheet Clone(WithChildren withChildren = WithChildren.Included)
+    {
+      return new Sheet(this, withChildren);
+    }
+
   }
 }

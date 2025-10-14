@@ -17,6 +17,8 @@
 
   public class DwgExporter : ExporterBase, IExport
   {
+    private const int sheetSizeCorrection = 1;
+
     public override string SaveFileDialogFilter => "Dwg files (*.dwg)|*.dwg";
 
     public async Task Export(Stream stream, ISheetPlacement sheetPlacement, bool doMergeLines, bool differentiateChildren)
@@ -83,14 +85,44 @@
       }
     }
 
-    private static CadDocument GenerateDwgDocumentWithSheetOutline(ISheet sheet)
+    private static CadDocument GenerateDwgDocumentWithSheetOutline(ISheet origSheet, int sheetSizeDecreasement)
     {
+      ISheet sheet = ((Sheet) origSheet).Clone();
+      var maxY = sheet.Points.Max(p => p.Y);
+      var minY = sheet.Points.Min(p => p.Y);
+      var maxX = sheet.Points.Max(p => p.X);
+      var minX = sheet.Points.Min(p => p.X);
+      const double tol = 1e-6;
+
+      foreach (var p in sheet.Points)
+      {
+        if (Math.Abs(p.Y - maxY) <= tol)
+        {
+          p.Y -= sheetSizeDecreasement / 2.0;
+        }
+
+        if (Math.Abs(p.Y - minY) <= tol)
+        {
+          p.Y += sheetSizeDecreasement / 2.0;
+        }
+
+        if (Math.Abs(p.X - maxX) <= tol)
+        {
+          p.X -= sheetSizeDecreasement / 2.0;
+        }
+
+        if (Math.Abs(p.X - minX) <= tol)
+        {
+          p.X += sheetSizeDecreasement / 2.0;
+        }
+      }
+
       var cadDocument = new CadDocument();
       cadDocument.Header.InsUnits = UnitsType.Millimeters;
 
       var sheetLayer = new Layer($"Plate_H{sheet.HeightCalculated}_W{sheet.WidthCalculated}")
       {
-        Color = ACadSharp.Color.Yellow
+        Color = ACadSharp.Color.Magenta
       };
       cadDocument.Layers.Add(sheetLayer);
 
@@ -105,7 +137,7 @@
       var sheetOutline = new LwPolyline();
       foreach (var vertex in vertices)
       {
-        // FINAL FIX: Use the 'Location' property as confirmed by the decompiled code.
+
         sheetOutline.Vertices.Add(new LwPolyline.Vertex { Location = vertex });
       }
       sheetOutline.IsClosed = true;
@@ -143,9 +175,7 @@
           }
         }
 
-        var sheetXoffset = -sheet.WidthCalculated * i;
-        // Use the existing XYZ and OffsetToNest logic which works with ACadSharp entities.
-        XYZ offsetDistance = new XYZ(polygon.X + sheetXoffset, polygon.Y, 0D);
+        XYZ offsetDistance = new XYZ(polygon.X , polygon.Y, 0D);
         List<Entity> newList = OffsetToNest(fl.Outers, offsetDistance, polygon.Rotation, differentiateChildren);
 
         foreach (Entity ent in newList)
@@ -238,7 +268,7 @@
     {
       try
       {
-        var cadDocument = GenerateDwgDocumentWithSheetOutline(sheet);
+        var cadDocument = GenerateDwgDocumentWithSheetOutline(sheet, sheetSizeCorrection);
         var entities = GetOffsetDwgEntities(polygons.Where(o => o.Sheet.Id == sheet.Id), sheet, i, differentiateChildren);
 
         if (doMergeLines)
