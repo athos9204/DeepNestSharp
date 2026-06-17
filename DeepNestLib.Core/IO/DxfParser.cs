@@ -59,9 +59,9 @@
       s.Name = fullFilename;
 
       //entities = entities.Where(e => e.Layer == null || !e.Layer.Contains("-HDLN", StringComparison.OrdinalIgnoreCase));
-      entities = entities.Where(e => e.Layer == null || !layersToExclude.Any(excl => e.Layer.Contains(excl, StringComparison.OrdinalIgnoreCase)));
+      IEnumerable<DxfEntity> filteredEntities = entities.Where(e => e.Layer == null || !layersToExclude.Any(excl => e.Layer.Contains(excl, StringComparison.OrdinalIgnoreCase)));
 
-      Dictionary<DxfEntity, IList<LineElement>> approximations = ApproximateEntities(entities);
+      Dictionary<DxfEntity, IList<LineElement>> approximations = ApproximateEntities(filteredEntities);
       s.AddRangeContour(ConnectElements(approximations));
 
       if (validateElementConnection && s.Outers.Any(z => z.Points.Count < 3))
