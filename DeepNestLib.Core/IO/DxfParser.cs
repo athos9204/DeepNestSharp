@@ -170,7 +170,7 @@
             }
 
           default:
-            throw new ArgumentException("unsupported entity type: " + ent);
+            continue;
         }
 
         elems = elems.Where(z => z.Start.DistTo(z.End) > RemoveThreshold).ToList();

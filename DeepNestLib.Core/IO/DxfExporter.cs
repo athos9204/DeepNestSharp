@@ -112,6 +112,7 @@
       foreach (var polygon in polygons)
       {
         RawDetail<DxfEntity> fl;
+        DxfEntity[] allEntities = null;
         if (polygon.Fitted == false || !polygon.Name.ToLower().Contains(".dxf") || polygon.Sheet.Id != sheet.Id)
         {
           continue;
@@ -123,12 +124,15 @@
 #if NCRUNCH
             if (polygon.IsExact && !(new FileInfo(polygon.Name).Exists))
             {
-              fl = DxfParser.ConvertDxfToRawDetail("generated.dxf", polygon.ToDxfFile().Entities.ToArray(),new List<string> { }, false);
+              allEntities = polygon.ToDxfFile().Entities.ToArray();
+              fl = DxfParser.ConvertDxfToRawDetail("generated.dxf", allEntities, new List<string> { }, false);
             }
             else
 #endif
             {
-              fl = DxfParser.ConvertDxfToRawDetail(polygon.Name, DxfFile.Load(polygon.Name).Entities.ToArray(), new List<string> { }, false);
+              var loadedFile = DxfFile.Load(polygon.Name);
+              allEntities = loadedFile.Entities.ToArray();
+              fl = DxfParser.ConvertDxfToRawDetail(polygon.Name, allEntities, new List<string> { }, false);
             }
           }
           catch
@@ -144,6 +148,17 @@
         foreach (DxfEntity ent in newlist)
         {
           yield return ent;
+        }
+
+        if (allEntities != null)
+        {
+          var textEntities = allEntities
+              .Where(e => e.EntityType == DxfEntityType.Text || e.EntityType == DxfEntityType.MText)
+              .ToList();
+          foreach (var ent in OffsetToNest(textEntities, offsetdistance, polygon.Rotation))
+          {
+            yield return ent;
+          }
         }
       }
     }
@@ -307,6 +322,27 @@
 
             break;
 
+          case DxfEntityType.Text:
+            DxfText dxfText = (DxfText)entity;
+            dxfText.Location = RotateLocation(rotationAngle, dxfText.Location);
+            dxfText.Location += offset;
+            dxfText.Rotation += rotationAngle;
+            if (dxfText.SecondAlignmentPoint != DxfPoint.Origin)
+            {
+              dxfText.SecondAlignmentPoint = RotateLocation(rotationAngle, dxfText.SecondAlignmentPoint);
+              dxfText.SecondAlignmentPoint += offset;
+            }
+            result.Add(dxfText);
+            break;
+
+          case DxfEntityType.MText:
+            DxfMText dxfMText = (DxfMText)entity;
+            dxfMText.InsertionPoint = RotateLocation(rotationAngle, dxfMText.InsertionPoint);
+            dxfMText.InsertionPoint += offset;
+            dxfMText.RotationAngle += GeometryUtil.ToRadians(rotationAngle);
+            result.Add(dxfMText);
+            break;
+
           case DxfEntityType.Body:
           case DxfEntityType.DgnUnderlay:
           case DxfEntityType.Dimension:
@@ -316,7 +352,6 @@
           case DxfEntityType.Insert:
           case DxfEntityType.Light:
           case DxfEntityType.ModelerGeometry:
-          case DxfEntityType.MText:
           case DxfEntityType.OleFrame:
           case DxfEntityType.Ole2Frame:
           case DxfEntityType.PdfUnderlay:
@@ -330,7 +365,6 @@
           case DxfEntityType.Shape:
           case DxfEntityType.Solid:
           case DxfEntityType.Spline:
-          case DxfEntityType.Text:
           case DxfEntityType.Tolerance:
           case DxfEntityType.Trace:
           case DxfEntityType.Underlay:
