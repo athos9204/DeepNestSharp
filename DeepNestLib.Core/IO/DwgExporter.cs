@@ -11,12 +11,15 @@
   using System;
   using System.Collections.Generic;
   using System.Drawing; // Required for PointF
+  using System.Globalization;
   using System.IO;
   using System.Linq;
   using System.Threading.Tasks;
 
   public class DwgExporter : ExporterBase, IExport
   {
+    private static readonly Serilog.ILogger _log = Serilog.Log.ForContext("SourceContext", "DwgExporter");
+
     private const int sheetSizeCorrection = 1;
 
     public override string SaveFileDialogFilter => "Dwg files (*.dwg)|*.dwg";
@@ -165,8 +168,14 @@
             CadDocument dxfDocument = DxfReader.Read(polygon.Name);
 
             // Use the existing DwgParser to process the entities from the loaded DXF document.
-            // The Entity objects are the same regardless of the source file format.
-            fl = DwgParser.ConvertDwgToRawDetail(polygon.Name, dxfDocument.Entities.ToArray());
+            // Exclude text entities — they are forwarded separately with correct transformation.
+            var allEntities = dxfDocument.Entities.ToArray();
+            var geomEntities = allEntities
+                .Where(e => !(e is ACadSharp.Entities.TextEntity) && !(e is ACadSharp.Entities.MText))
+                .ToArray();
+            _log.Debug("GetOffsetDwgEntities: '{File}' has {Total} entities, {Text} text excluded from geometry",
+                polygon.Name, allEntities.Length, allEntities.Length - geomEntities.Length);
+            fl = DwgParser.ConvertDwgToRawDetail(polygon.Name, geomEntities);
           }
           catch (Exception ex)
           {
@@ -280,12 +289,98 @@
         {
           cadDocument.Entities.Add(entity);
         }
+
+        AddUrsaIdLabels(cadDocument, polygons, sheet, i);
+
         return cadDocument;
       }
       catch (Exception ex)
       {
         throw;
       }
+    }
+
+    /// <summary>Extension of the sidecar file (written by the add-in) that carries the URSA_ID label.</summary>
+    private const string UrsaIdSidecarExtension = ".ursaid";
+
+    private static void AddUrsaIdLabels(CadDocument cadDocument, IEnumerable<INfp> polygons, ISheet sheet, int sheetIndex)
+    {
+      Layer ursaIdLayer = null;
+      int totalAdded = 0;
+
+      foreach (var polygon in polygons)
+      {
+        if (polygon.Fitted == false || !polygon.Name.ToLower().Contains(".dxf") || polygon.Sheet.Id != sheet.Id)
+          continue;
+
+        try
+        {
+          // The label travels in a sidecar file next to the raw DXF rather than as a text
+          // entity inside it: injecting text via IxMilia and re-saving produced a DXF whose
+          // LINE geometry ACadSharp could not read, which wiped the part outlines from the
+          // final sheet. Reading from the sidecar keeps the raw DXF a pristine Revit export.
+          string sidecarPath = polygon.Name + UrsaIdSidecarExtension;
+          if (!System.IO.File.Exists(sidecarPath))
+          {
+            _log.Debug("AddUrsaIdLabels: no sidecar for '{File}'", polygon.Name);
+            continue;
+          }
+
+          var lines = System.IO.File.ReadAllLines(sidecarPath);
+          if (lines.Length < 3 || string.IsNullOrEmpty(lines[0]))
+          {
+            _log.Debug("AddUrsaIdLabels: malformed sidecar '{File}'", sidecarPath);
+            continue;
+          }
+
+          string label = lines[0];
+          if (!double.TryParse(lines[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx) ||
+              !double.TryParse(lines[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy))
+          {
+            _log.Debug("AddUrsaIdLabels: unparsable centroid in sidecar '{File}'", sidecarPath);
+            continue;
+          }
+
+          double height = 30.0;
+          if (lines.Length >= 4)
+            double.TryParse(lines[3], NumberStyles.Float, CultureInfo.InvariantCulture, out height);
+
+          if (ursaIdLayer == null)
+          {
+            if (cadDocument.Layers.Contains("URSA_ID"))
+            {
+              ursaIdLayer = cadDocument.Layers["URSA_ID"];
+            }
+            else
+            {
+              ursaIdLayer = new Layer("URSA_ID") { Color = new ACadSharp.Color(1) }; // red
+              cadDocument.Layers.Add(ursaIdLayer);
+            }
+          }
+
+          XYZ offsetDistance = new XYZ(polygon.X, polygon.Y, 0D);
+          XYZ rotatedPt = RotateLocation(polygon.Rotation, new XYZ(cx, cy, 0)) + offsetDistance;
+
+          cadDocument.Entities.Add(new ACadSharp.Entities.TextEntity
+          {
+            Value = label,
+            InsertPoint = new XYZ(rotatedPt.X, rotatedPt.Y, 0),
+            Height = height,
+            Rotation = polygon.Rotation * Math.PI / 180.0,
+            Layer = ursaIdLayer,
+            Color = new ACadSharp.Color(1), // red — explicit so it's visible regardless of layer defaults
+          });
+          totalAdded++;
+          _log.Debug("AddUrsaIdLabels: added label '{Value}' at ({X:F1},{Y:F1})",
+              label, rotatedPt.X, rotatedPt.Y);
+        }
+        catch (Exception ex)
+        {
+          _log.Warning(ex, "AddUrsaIdLabels failed for '{File}'", polygon.Name);
+        }
+      }
+
+      _log.Debug("AddUrsaIdLabels: sheet {SheetIndex} — {Total} label(s) added", sheetIndex, totalAdded);
     }
   }
 
