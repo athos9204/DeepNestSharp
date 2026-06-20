@@ -150,51 +150,6 @@
       return cadDocument;
     }
 
-    private static IEnumerable<Entity> GetOffsetDwgEntities(IEnumerable<INfp> polygons, ISheet sheet, int i, bool differentiateChildren)
-    {
-      foreach (var polygon in polygons)
-      {
-        RawDetail<Entity> fl;
-        // Check for .dxf files instead of .dwg
-        if (polygon.Fitted == false || !polygon.Name.ToLower().Contains(".dxf") || polygon.Sheet.Id != sheet.Id)
-        {
-          continue;
-        }
-        else
-        {
-          try
-          {
-            // Use ACadSharp's DxfReader to load the original DXF file.
-            CadDocument dxfDocument = DxfReader.Read(polygon.Name);
-
-            // Use the existing DwgParser to process the entities from the loaded DXF document.
-            // Exclude text entities — they are forwarded separately with correct transformation.
-            var allEntities = dxfDocument.Entities.ToArray();
-            var geomEntities = allEntities
-                .Where(e => !(e is ACadSharp.Entities.TextEntity) && !(e is ACadSharp.Entities.MText))
-                .ToArray();
-            _log.Debug("GetOffsetDwgEntities: '{File}' has {Total} entities, {Text} text excluded from geometry",
-                polygon.Name, allEntities.Length, allEntities.Length - geomEntities.Length);
-            fl = DwgParser.ConvertDwgToRawDetail(polygon.Name, geomEntities);
-          }
-          catch (Exception ex)
-          {
-            // Added the inner exception for better debugging.
-            throw new FileNotFoundException($"The file {polygon.Name} could not be loaded. When exporting the original files that generated the nest are used for precision, instead of the copies rotated and manipulated potentially many times during the nest; degrading potentially their accuracy. It would be possible to load and store the original files but that'd take some effort...", ex);
-          }
-        }
-
-        XYZ offsetDistance = new XYZ(polygon.X , polygon.Y, 0D);
-        List<Entity> newList = OffsetToNest(fl.Outers, offsetDistance, polygon.Rotation, differentiateChildren);
-
-        foreach (Entity ent in newList)
-        {
-          yield return ent;
-        }
-      }
-    }
-
-
     private static List<Entity> OffsetToNest(IEnumerable<ILocalContour> contours, XYZ offsetDistance, double rotation, bool differentiateChildren)
     {
       var allEntities = new List<Entity>();
@@ -278,20 +233,60 @@
       try
       {
         var cadDocument = GenerateDwgDocumentWithSheetOutline(sheet, sheetSizeCorrection);
-        var entities = GetOffsetDwgEntities(polygons.Where(o => o.Sheet.Id == sheet.Id), sheet, i, differentiateChildren);
+        Layer ursaIdLayer = null;
+        int totalLabels = 0;
+
+        foreach (var polygon in polygons.Where(o => o.Sheet.Id == sheet.Id))
+        {
+          // Check for .dxf files instead of .dwg
+          if (polygon.Fitted == false || !polygon.Name.ToLower().Contains(".dxf") || polygon.Sheet.Id != sheet.Id)
+          {
+            continue;
+          }
+
+          RawDetail<Entity> fl;
+          try
+          {
+            // Use ACadSharp's DxfReader to load the original DXF file.
+            CadDocument dxfDocument = DxfReader.Read(polygon.Name);
+
+            // Exclude text entities — labels are placed separately, centred on the geometry.
+            var allEntities = dxfDocument.Entities.ToArray();
+            var geomEntities = allEntities
+                .Where(e => !(e is ACadSharp.Entities.TextEntity) && !(e is ACadSharp.Entities.MText))
+                .ToArray();
+            _log.Debug("GenerateDwgDocument: '{File}' has {Total} entities, {Text} text excluded from geometry",
+                polygon.Name, allEntities.Length, allEntities.Length - geomEntities.Length);
+            fl = DwgParser.ConvertDwgToRawDetail(polygon.Name, geomEntities);
+          }
+          catch (Exception ex)
+          {
+            throw new FileNotFoundException($"The file {polygon.Name} could not be loaded. When exporting the original files that generated the nest are used for precision, instead of the copies rotated and manipulated potentially many times during the nest; degrading potentially their accuracy. It would be possible to load and store the original files but that'd take some effort...", ex);
+          }
+
+          // Transform the raw geometry to its placed position/rotation on the sheet.
+          XYZ offsetDistance = new XYZ(polygon.X, polygon.Y, 0D);
+          List<Entity> placedEntities = OffsetToNest(fl.Outers, offsetDistance, polygon.Rotation, differentiateChildren);
+
+          foreach (Entity ent in placedEntities)
+          {
+            cadDocument.Entities.Add(ent);
+          }
+
+          // Anchor the label to the centre of the geometry we just placed — never to a
+          // separately re-transformed raw centroid (which is what made labels drift before).
+          if (AddUrsaIdLabelForPart(cadDocument, polygon, placedEntities, ref ursaIdLayer))
+          {
+            totalLabels++;
+          }
+        }
 
         if (doMergeLines)
         {
           // TODO: Implement DWG-specific line merging if needed
         }
 
-        foreach (var entity in entities)
-        {
-          cadDocument.Entities.Add(entity);
-        }
-
-        AddUrsaIdLabels(cadDocument, polygons, sheet, i);
-
+        _log.Debug("GenerateDwgDocument: sheet {SheetIndex} — {Total} label(s) added", i, totalLabels);
         return cadDocument;
       }
       catch (Exception ex)
@@ -303,84 +298,131 @@
     /// <summary>Extension of the sidecar file (written by the add-in) that carries the URSA_ID label.</summary>
     private const string UrsaIdSidecarExtension = ".ursaid";
 
-    private static void AddUrsaIdLabels(CadDocument cadDocument, IEnumerable<INfp> polygons, ISheet sheet, int sheetIndex)
+    /// <summary>
+    /// Places the URSA_ID label at the bounding-box centre of the part's ALREADY-PLACED geometry
+    /// (the entities just written to <paramref name="cadDocument"/> for this part). Anchoring to the
+    /// drawn geometry — rather than re-transforming a raw centroid — guarantees the label can never
+    /// drift from its part regardless of rotation/offset order. Only the label TEXT (and an optional
+    /// height) is taken from the sidecar file; its position is derived entirely from the geometry.
+    /// </summary>
+    private static bool AddUrsaIdLabelForPart(CadDocument cadDocument, INfp polygon, List<Entity> placedEntities, ref Layer ursaIdLayer)
     {
-      Layer ursaIdLayer = null;
-      int totalAdded = 0;
-
-      foreach (var polygon in polygons)
+      try
       {
-        if (polygon.Fitted == false || !polygon.Name.ToLower().Contains(".dxf") || polygon.Sheet.Id != sheet.Id)
-          continue;
-
-        try
+        // The label text travels in a sidecar file next to the raw DXF (the raw DXF is left a
+        // pristine Revit export so its LINE geometry stays readable by every consumer).
+        string sidecarPath = polygon.Name + UrsaIdSidecarExtension;
+        if (!System.IO.File.Exists(sidecarPath))
         {
-          // The label travels in a sidecar file next to the raw DXF rather than as a text
-          // entity inside it: injecting text via IxMilia and re-saving produced a DXF whose
-          // LINE geometry ACadSharp could not read, which wiped the part outlines from the
-          // final sheet. Reading from the sidecar keeps the raw DXF a pristine Revit export.
-          string sidecarPath = polygon.Name + UrsaIdSidecarExtension;
-          if (!System.IO.File.Exists(sidecarPath))
-          {
-            _log.Debug("AddUrsaIdLabels: no sidecar for '{File}'", polygon.Name);
-            continue;
-          }
-
-          var lines = System.IO.File.ReadAllLines(sidecarPath);
-          if (lines.Length < 3 || string.IsNullOrEmpty(lines[0]))
-          {
-            _log.Debug("AddUrsaIdLabels: malformed sidecar '{File}'", sidecarPath);
-            continue;
-          }
-
-          string label = lines[0];
-          if (!double.TryParse(lines[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double cx) ||
-              !double.TryParse(lines[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double cy))
-          {
-            _log.Debug("AddUrsaIdLabels: unparsable centroid in sidecar '{File}'", sidecarPath);
-            continue;
-          }
-
-          double height = 30.0;
-          if (lines.Length >= 4)
-            double.TryParse(lines[3], NumberStyles.Float, CultureInfo.InvariantCulture, out height);
-
-          if (ursaIdLayer == null)
-          {
-            if (cadDocument.Layers.Contains("URSA_ID"))
-            {
-              ursaIdLayer = cadDocument.Layers["URSA_ID"];
-            }
-            else
-            {
-              ursaIdLayer = new Layer("URSA_ID") { Color = new ACadSharp.Color(1) }; // red
-              cadDocument.Layers.Add(ursaIdLayer);
-            }
-          }
-
-          XYZ offsetDistance = new XYZ(polygon.X, polygon.Y, 0D);
-          XYZ rotatedPt = RotateLocation(polygon.Rotation, new XYZ(cx, cy, 0)) + offsetDistance;
-
-          cadDocument.Entities.Add(new ACadSharp.Entities.TextEntity
-          {
-            Value = label,
-            InsertPoint = new XYZ(rotatedPt.X, rotatedPt.Y, 0),
-            Height = height,
-            Rotation = polygon.Rotation * Math.PI / 180.0,
-            Layer = ursaIdLayer,
-            Color = new ACadSharp.Color(1), // red — explicit so it's visible regardless of layer defaults
-          });
-          totalAdded++;
-          _log.Debug("AddUrsaIdLabels: added label '{Value}' at ({X:F1},{Y:F1})",
-              label, rotatedPt.X, rotatedPt.Y);
+          _log.Debug("AddUrsaIdLabelForPart: no sidecar for '{File}'", polygon.Name);
+          return false;
         }
-        catch (Exception ex)
+
+        var lines = System.IO.File.ReadAllLines(sidecarPath);
+        if (lines.Length < 1 || string.IsNullOrEmpty(lines[0]))
         {
-          _log.Warning(ex, "AddUrsaIdLabels failed for '{File}'", polygon.Name);
+          _log.Debug("AddUrsaIdLabelForPart: malformed sidecar '{File}'", sidecarPath);
+          return false;
+        }
+
+        string label = lines[0];
+
+        double height = 30.0;
+        if (lines.Length >= 4)
+          double.TryParse(lines[3], NumberStyles.Float, CultureInfo.InvariantCulture, out height);
+
+        if (!TryGetEntitiesBBoxCenter(placedEntities, out double cx, out double cy))
+        {
+          _log.Debug("AddUrsaIdLabelForPart: no geometry to centre label on for '{File}'", polygon.Name);
+          return false;
+        }
+
+        if (ursaIdLayer == null)
+        {
+          ursaIdLayer = cadDocument.Layers.Contains("URSA_ID")
+            ? cadDocument.Layers["URSA_ID"]
+            : new Layer("URSA_ID") { Color = new ACadSharp.Color(1) }; // red
+          if (!cadDocument.Layers.Contains("URSA_ID"))
+            cadDocument.Layers.Add(ursaIdLayer);
+        }
+
+        // Many DWG viewers ignore Center/Middle justification and anchor text at the raw
+        // insertion point (DXF code 10), which left the labels visibly off-centre. To render
+        // centred in EVERY viewer we use LEFT/BASELINE justification (always honoured via code
+        // 10) and pre-offset the insertion point by half the estimated text box, so the glyphs
+        // straddle the part centre. The exact centroid is kept in AlignmentPoint for the PDF
+        // renderer, which centres on it precisely.
+        double estWidth = label.Length * height * 0.6; // ~0.6*height glyph advance
+        double insX = cx - estWidth / 2.0;
+        double insY = cy - height / 2.0;
+
+        cadDocument.Entities.Add(new ACadSharp.Entities.TextEntity
+        {
+          Value = label,
+          InsertPoint = new XYZ(insX, insY, 0),
+          AlignmentPoint = new XYZ(cx, cy, 0),
+          HorizontalAlignment = ACadSharp.Entities.TextHorizontalAlignment.Left,
+          VerticalAlignment = ACadSharp.Entities.TextVerticalAlignmentType.Baseline,
+          Height = height,
+          Layer = ursaIdLayer,
+          Color = new ACadSharp.Color(1), // red
+        });
+        _log.Debug("AddUrsaIdLabelForPart: '{Value}' centred on ({X:F1},{Y:F1})", label, cx, cy);
+        return true;
+      }
+      catch (Exception ex)
+      {
+        _log.Warning(ex, "AddUrsaIdLabelForPart failed for '{File}'", polygon.Name);
+        return false;
+      }
+    }
+
+    /// <summary>
+    /// Computes the axis-aligned bounding-box centre of a set of placed entities (LINE, LWPOLYLINE,
+    /// ARC, CIRCLE). Returns false when none contribute any geometry.
+    /// </summary>
+    private static bool TryGetEntitiesBBoxCenter(IEnumerable<Entity> entities, out double cx, out double cy)
+    {
+      double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+
+      void Expand(double x, double y)
+      {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      foreach (var entity in entities)
+      {
+        switch (entity.ObjectType)
+        {
+          case ObjectType.LINE:
+            var line = (Line)entity;
+            Expand(line.StartPoint.X, line.StartPoint.Y);
+            Expand(line.EndPoint.X, line.EndPoint.Y);
+            break;
+          case ObjectType.LWPOLYLINE:
+            var lwPoly = (LwPolyline)entity;
+            foreach (var v in lwPoly.Vertices) Expand(v.Location.X, v.Location.Y);
+            break;
+          case ObjectType.ARC:
+            var arc = (Arc)entity;
+            Expand(arc.Center.X - arc.Radius, arc.Center.Y - arc.Radius);
+            Expand(arc.Center.X + arc.Radius, arc.Center.Y + arc.Radius);
+            break;
+          case ObjectType.CIRCLE:
+            var circle = (Circle)entity;
+            Expand(circle.Center.X - circle.Radius, circle.Center.Y - circle.Radius);
+            Expand(circle.Center.X + circle.Radius, circle.Center.Y + circle.Radius);
+            break;
         }
       }
 
-      _log.Debug("AddUrsaIdLabels: sheet {SheetIndex} — {Total} label(s) added", sheetIndex, totalAdded);
+      if (minX == double.MaxValue) { cx = 0; cy = 0; return false; }
+      cx = (minX + maxX) / 2.0;
+      cy = (minY + maxY) / 2.0;
+      return true;
     }
   }
 
