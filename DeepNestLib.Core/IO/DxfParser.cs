@@ -16,7 +16,7 @@
     private const int NumberOfRetries = 5;
     private const int DelayOnRetry = 1000;
     private const double RemoveThreshold = 10e-5;
-    private const double ClosingThreshold = 10e-2;
+    private const double ClosingThreshold = 0.5;   // 0.5mm — bridges Revit geometry precision gaps (~0.305mm max)
 
     private static volatile object loadLock = new object();
 
